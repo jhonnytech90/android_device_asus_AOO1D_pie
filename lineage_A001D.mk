@@ -1,12 +1,11 @@
 #
-# Copyright (C) 2015 The CyanogenMod Project
-# Copyright (C) 2018 The LineageOS Project
+# Copyright (C) 2017 The LineageOS Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,20 +18,22 @@
 $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
 
-# Inherit from zenfone3 device
+# Inherit from A001D device
 $(call inherit-product, device/asus/A001D/device.mk)
-
-# Inherit from zenfone3 vendor
-$(call inherit-product-if-exists, vendor/asus/A001D/A001D-vendor.mk)
 
 # Inherit some common LineageOS stuff.
 $(call inherit-product, vendor/lineage/config/common_full_phone.mk)
 
-PRODUCT_NAME := lineage_A001D
+# Device identifier. This must come after all inclusions
 PRODUCT_DEVICE := A001D
+PRODUCT_NAME := lineage_A001D
 PRODUCT_BRAND := asus
+PRODUCT_MODEL := ASUS_A001D
 PRODUCT_MANUFACTURER := asus
 
-PRODUCT_GMS_CLIENTID_BASE := android-asus
+PRODUCT_BUILD_PROP_OVERRIDES += \
+PRIVATE_BUILD_DESC="WW_Phone-user 8.1.0 OPM1 15.32.1902.653 release-keys" \
+PRODUCT_DEVICE=ASUS_A001D_2 \
+PRODUCT_NAME=WW_Phone
 
-PRODUCT_SYSTEM_PROPERTY_BLACKLIST := ro.product.name
+BUILD_FINGERPRINT := asus/WW_Phone/ASUS_A001D_2:8.1.0/OPM1/15.32.1902.653-20190307:user/release-keys
