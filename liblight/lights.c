@@ -1,6 +1,5 @@
-
 /*
- * Copyright (C) 2014, 2017 The  Linux Foundation. All rights reserved.
+ * Copyright (C) 2014, 2017-2018 The  Linux Foundation. All rights reserved.
  * Not a contribution
  * Copyright (C) 2008 The Android Open Source Project
  *
@@ -20,8 +19,8 @@
 
 // #define LOG_NDEBUG 0
 
-#include <cutils/log.h>
-
+#include <log/log.h>
+#include <cutils/properties.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +34,9 @@
 
 #include <hardware/lights.h>
 
-#undef DEBUG_ZF3_LIBLIGHT
+#ifndef DEFAULT_LOW_PERSISTENCE_MODE_BRIGHTNESS
+#define DEFAULT_LOW_PERSISTENCE_MODE_BRIGHTNESS 0x80
+#endif
 
 /******************************************************************************/
 
@@ -46,21 +47,36 @@ static struct light_state_t g_battery;
 static int g_last_backlight_mode = BRIGHTNESS_MODE_USER;
 static int g_attention = 0;
 
-char const*const LCD_FILE
-        = "/sys/class/leds/lcd-backlight/brightness";
-
 char const*const RED_LED_FILE
         = "/sys/class/leds/red/brightness";
 
 char const*const GREEN_LED_FILE
         = "/sys/class/leds/green/brightness";
 
-char const*const RED_PWM_FILE
-        = "/sys/class/leds/red/pwm_us";
+char const*const BLUE_LED_FILE
+        = "/sys/class/leds/blue/brightness";
 
-char const*const GREEN_PWM_FILE
-        = "/sys/class/leds/green/pwm_us";
-        
+char const*const LCD_FILE
+        = "/sys/class/leds/lcd-backlight/brightness";
+
+char const*const LCD_FILE2
+        = "/sys/class/backlight/panel0-backlight/brightness";
+
+char const*const BUTTON_FILE
+        = "/sys/class/leds/button-backlight/brightness";
+
+char const*const RED_BLINK_FILE
+        = "/sys/class/leds/red/blink";
+
+char const*const GREEN_BLINK_FILE
+        = "/sys/class/leds/green/blink";
+
+char const*const BLUE_BLINK_FILE
+        = "/sys/class/leds/blue/blink";
+
+char const*const PERSISTENCE_FILE
+        = "/sys/class/graphics/fb0/msm_fb_persist_mode";
+
 /**
  * device methods
  */
@@ -113,13 +129,36 @@ set_light_backlight(struct light_device_t* dev,
 {
     int err = 0;
     int brightness = rgb_to_brightness(state);
+    unsigned int lpEnabled =
+        state->brightnessMode == BRIGHTNESS_MODE_LOW_PERSISTENCE;
     if(!dev) {
         return -1;
     }
-    
+
     pthread_mutex_lock(&g_lock);
+    // Toggle low persistence mode state
+    if ((g_last_backlight_mode != state->brightnessMode && lpEnabled) ||
+        (!lpEnabled &&
+         g_last_backlight_mode == BRIGHTNESS_MODE_LOW_PERSISTENCE)) {
+        if ((err = write_int(PERSISTENCE_FILE, lpEnabled)) != 0) {
+            ALOGE("%s: Failed to write to %s: %s\n", __FUNCTION__,
+                   PERSISTENCE_FILE, strerror(errno));
+        }
+        if (lpEnabled != 0) {
+            brightness = DEFAULT_LOW_PERSISTENCE_MODE_BRIGHTNESS;
+        }
+    }
+
     g_last_backlight_mode = state->brightnessMode;
-    err = write_int(LCD_FILE, brightness);
+
+    if (!err) {
+        if (!access(LCD_FILE, F_OK)) {
+            err = write_int(LCD_FILE, brightness);
+        } else {
+            err = write_int(LCD_FILE2, brightness);
+        }
+    }
+
     pthread_mutex_unlock(&g_lock);
     return err;
 }
@@ -128,8 +167,8 @@ static int
 set_speaker_light_locked(struct light_device_t* dev,
         struct light_state_t const* state)
 {
-    int red, green;
-    int blink, fake_pwm, pwm;
+    int red, green, blue;
+    int blink;
     int onMS, offMS;
     unsigned int colorRGB;
 
@@ -150,69 +189,48 @@ set_speaker_light_locked(struct light_device_t* dev,
     }
 
     colorRGB = state->color;
-    
+
+#if 0
+    ALOGD("set_speaker_light_locked mode %d, colorRGB=%08X, onMS=%d, offMS=%d\n",
+            state->flashMode, colorRGB, onMS, offMS);
+#endif
+
     red = (colorRGB >> 16) & 0xFF;
     green = (colorRGB >> 8) & 0xFF;
+    blue = colorRGB & 0xFF;
 
-    #ifdef DEBUG_ZF3_LIBLIGHT
-    ALOGD("set_speaker_light_locked mode %d, colorRGB=%08X, onMS=%d, offMS=%d, red=%D, green=%d\n",
-            state->flashMode, colorRGB, onMS, offMS, red, green);
-    #endif
-    
     if (onMS > 0 && offMS > 0) {
-        int totalMS = onMS + offMS;
-
-        // pwm specifies the ratio of ON versus OFF
-        // pwm = 0 -> always off
-        // pwm = 255 -> always on
-        fake_pwm = (onMS * 255) / totalMS;
-
-        // the low 4 bits are ignored, so round up if necessary
-        if (fake_pwm > 0 && fake_pwm < 16)
-            fake_pwm = 16;
-
-        blink = 1;
-        pwm = offMS * 1000;
+        /*
+         * if ON time == OFF time
+         *   use blink mode 2
+         * else
+         *   use blink mode 1
+         */
+        if (onMS == offMS)
+            blink = 2;
+        else
+            blink = 1;
     } else {
         blink = 0;
-        pwm = 0;
     }
 
-    // turn led off
-    write_int(RED_LED_FILE, 0);
-    write_int(GREEN_LED_FILE, 0);
-
     if (blink) {
-        //Due to the pwm control the brightness cannot be set when blinking.
-        //The red light is used as fallback when there is no green value, eg. low battery pulse.
-        if(green != 0) {
-            // brightness equals to led on in ms
-            write_int(GREEN_LED_FILE, fake_pwm);
-            // pwm equals to led off in us
-            write_int(GREEN_PWM_FILE, pwm);
-        } else {
-            // brightness equals to led on in ms
-            write_int(RED_LED_FILE, fake_pwm);
-            // pwm equals to led off in us
-            write_int(RED_PWM_FILE, pwm);
+        if (red) {
+            if (write_int(RED_BLINK_FILE, blink))
+                write_int(RED_LED_FILE, 0);
+        }
+        if (green) {
+            if (write_int(GREEN_BLINK_FILE, blink))
+                write_int(GREEN_LED_FILE, 0);
+        }
+        if (blue) {
+            if (write_int(BLUE_BLINK_FILE, blink))
+                write_int(BLUE_LED_FILE, 0);
         }
     } else {
-        //For always-on the "color" can be set properly:
-        
-        //Set pwm to always-on
-        write_int(RED_PWM_FILE, 100);
-        write_int(GREEN_PWM_FILE, 100);
-        
-        // The light that gets switched off has to be set first, otherwise both will be off.
-        if(red == 0 || (red != 0 && green != 0)) {
-            //Red could be zero. Switch it off first.
-            write_int(RED_LED_FILE, red);
-            write_int(GREEN_LED_FILE, green);
-        }else {
-            //Green is zero. Switch it off first.
-            write_int(GREEN_LED_FILE, green);
-            write_int(RED_LED_FILE, red);
-        }
+        write_int(RED_LED_FILE, red);
+        write_int(GREEN_LED_FILE, green);
+        write_int(BLUE_LED_FILE, blue);
     }
 
     return 0;
@@ -221,10 +239,10 @@ set_speaker_light_locked(struct light_device_t* dev,
 static void
 handle_speaker_battery_locked(struct light_device_t* dev)
 {
-    if (is_lit(&g_notification)) {
-        set_speaker_light_locked(dev, &g_notification);
-    } else {
+    if (is_lit(&g_battery)) {
         set_speaker_light_locked(dev, &g_battery);
+    } else {
+        set_speaker_light_locked(dev, &g_notification);
     }
 }
 
@@ -265,6 +283,19 @@ set_light_attention(struct light_device_t* dev,
     return 0;
 }
 
+static int
+set_light_buttons(struct light_device_t* dev,
+        struct light_state_t const* state)
+{
+    int err = 0;
+    if(!dev) {
+        return -1;
+    }
+    pthread_mutex_lock(&g_lock);
+    err = write_int(BUTTON_FILE, state->color & 0xFF);
+    pthread_mutex_unlock(&g_lock);
+    return err;
+}
 
 /** Close the lights device */
 static int
@@ -290,12 +321,20 @@ static int open_lights(const struct hw_module_t* module, char const* name,
     int (*set_light)(struct light_device_t* dev,
             struct light_state_t const* state);
 
-    if (0 == strcmp(LIGHT_ID_BACKLIGHT, name))
+    if (0 == strcmp(LIGHT_ID_BACKLIGHT, name)) {
         set_light = set_light_backlight;
-    else if (0 == strcmp(LIGHT_ID_BATTERY, name))
+    } else if (0 == strcmp(LIGHT_ID_BATTERY, name))
         set_light = set_light_battery;
     else if (0 == strcmp(LIGHT_ID_NOTIFICATIONS, name))
         set_light = set_light_notifications;
+    else if (0 == strcmp(LIGHT_ID_BUTTONS, name)) {
+        if (!access(BUTTON_FILE, F_OK)) {
+          // enable light button when the file is present
+          set_light = set_light_buttons;
+        } else {
+          return -EINVAL;
+        }
+    }
     else if (0 == strcmp(LIGHT_ID_ATTENTION, name))
         set_light = set_light_attention;
     else
@@ -332,7 +371,7 @@ struct hw_module_t HAL_MODULE_INFO_SYM = {
     .version_major = 1,
     .version_minor = 0,
     .id = LIGHTS_HARDWARE_MODULE_ID,
-    .name = "Zenfone 3 lights Module",
+    .name = "lights Module",
     .author = "Google, Inc.",
     .methods = &lights_module_methods,
 };
